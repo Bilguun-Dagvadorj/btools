@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "btools"
+version = "0.1.0"
+description = "Personal Oracle DB and analysis utilities"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas",
+    "sqlalchemy",
+    "cx_Oracle",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["btools*"]
