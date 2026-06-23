@@ -13,11 +13,10 @@ from sqlalchemy.sql import text
 
 
 # ---------------------------------------------------------------------------
-# Connection
+# Connection — engines are module-level singletons (connection pool reuse)
 # ---------------------------------------------------------------------------
 
 def _build_connection_string() -> str:
-    """Build Oracle connection string from environment variables."""
     user     = os.environ["ORACLE_USERNAME"]
     password = os.environ["ORACLE_PASSWORD"]
     host     = os.environ["ORACLE_HOSTNAME"]
@@ -26,12 +25,7 @@ def _build_connection_string() -> str:
     return f"oracle+cx_oracle://{user}:{password}@{host}:{port}/?service_name={service}"
 
 
-def _engine():
-    return create_engine(_build_connection_string())
-
-
 def _build_cms_connection_string() -> str:
-    """Build CMS Oracle connection string from environment variables."""
     user     = os.environ["CMS_USERNAME"]
     password = os.environ["CMS_PASSWORD"]
     host     = os.environ["CMS_HOSTNAME"]
@@ -40,16 +34,34 @@ def _build_cms_connection_string() -> str:
     return f"oracle+cx_oracle://{user}:{password}@{host}:{port}/?service_name={service}"
 
 
+_engine_instance = None
+_cms_engine_instance = None
+
+
+def _engine():
+    global _engine_instance
+    if _engine_instance is None:
+        _engine_instance = create_engine(
+            _build_connection_string(),
+            pool_pre_ping=True
+        )
+    return _engine_instance
+
+
 def _cms_engine():
-    return create_engine(_build_cms_connection_string())
+    global _cms_engine_instance
+    if _cms_engine_instance is None:
+        _cms_engine_instance = create_engine(_build_cms_connection_string())
+    return _cms_engine_instance
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _col_length(str_len: int) -> int:
-    """Round up string length to nearest power-of-2 boundary."""
+def _col_length(str_len) -> int:
+    if not str_len or math.isnan(float(str_len)) or str_len < 1:
+        return 64
     pw = int(math.log(str_len, 2))
     return int(math.ceil((str_len + 2 ** (pw - 1)) / 2 ** (pw - 1)) * 2 ** (pw - 1))
 
@@ -77,8 +89,7 @@ def _sql_col(data_frame: pd.DataFrame) -> dict:
 
 def cms_import(query: str) -> pd.DataFrame:
     """Run a SELECT query against CMS and return a DataFrame."""
-    with _cms_engine().connect() as conn:
-        return pd.read_sql(query, conn)
+    return pd.read_sql(query, _cms_engine())
 
 
 def cms_export(
@@ -104,14 +115,16 @@ def cms_execute(query: str) -> None:
         conn.execute(text(query))
 
 
-def oracle_import(query: str, chunksize: int = 100_000) -> pd.DataFrame:
+def oracle_import(query: str, params=None, chunksize: int = 100_000) -> pd.DataFrame:
     """Run a SELECT query and return a DataFrame.
 
     Reads in chunks to avoid MemoryError on large result sets.
+    params: bind variables passed safely to the driver (prevents SQL injection).
     """
-    with _engine().connect() as conn:
-        chunks = pd.read_sql(query, conn, chunksize=chunksize)
-        return pd.concat(chunks, ignore_index=True)
+    chunks = list(pd.read_sql(query, _engine(), params=params, chunksize=chunksize))
+    if not chunks:
+        return pd.DataFrame()
+    return pd.concat(chunks, ignore_index=True)
 
 
 def oracle_export(
